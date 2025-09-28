@@ -11,6 +11,9 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 from pathlib import Path
+import os
+from decouple import config, Csv
+from decimal import Decimal
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -20,12 +23,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure--*r@#%4@jyl7^k9ibl5(5!c@47ow%v0@2g&!+hmrcl-5j#%vtp'
+SECRET_KEY = config('DJANGO_SECRET_KEY', default='django-insecure--*r@#%4@jyl7^k9ibl5(5!c@47ow%v0@2g&!+hmrcl-5j#%vtp')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = config('DEBUG', default=True, cast=bool)
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1', cast=Csv())
 
 
 # Application definition
@@ -37,10 +40,21 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'rest_framework',
+    'rest_framework.authtoken',
+    'drf_spectacular',
+    'corsheaders',
+    'django_celery_beat',
+    'apps.common',
+    'apps.users',
+    'apps.wallets',
+    'apps.loans',
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',  # For static file serving in production
+    'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -54,11 +68,11 @@ ROOT_URLCONF = 'p2p_lending_platform.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [BASE_DIR / 'templates']
-        ,
+        'DIRS': [BASE_DIR / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
+                'django.template.context_processors.debug',
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
@@ -75,10 +89,27 @@ WSGI_APPLICATION = 'p2p_lending_platform.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': config('DATABASE_NAME', default='p2p_lending'),
+        'USER': config('DATABASE_USER', default='postgres'),
+        'PASSWORD': config('DATABASE_PASSWORD', default='postgres'),
+        'HOST': config('DATABASE_HOST', default='p2p_lending_db'),  # Docker service name
+        'PORT': config('DATABASE_PORT', default='5432'),
+        'CONN_MAX_AGE': 60,
+        'OPTIONS': {
+            'sslmode': 'prefer',
+        },
     }
 }
+
+# SQLite fallback for local development
+if config('USE_SQLITE', default=False, cast=bool):
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 
 # Password validation
@@ -105,19 +136,247 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = config('TIME_ZONE', default='UTC')
 
-USE_I18N = True
-
+USE_I18N = False
 USE_TZ = True
 
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+# WhiteNoise configuration for static file serving
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+
+# Media files
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
+# File upload settings
+FILE_UPLOAD_MAX_MEMORY_SIZE = config('MAX_UPLOAD_SIZE', default=5242880, cast=int)  # 5MB
+DATA_UPLOAD_MAX_MEMORY_SIZE = config('MAX_UPLOAD_SIZE', default=5242880, cast=int)
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Django REST Framework settings
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authentication.SessionAuthentication',
+        'rest_framework.authentication.TokenAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'PAGE_SIZE': 20,
+    'EXCEPTION_HANDLER': 'apps.common.exception_handler.custom_exception_handler',
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+        'rest_framework.throttling.ScopedRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '100/hour',
+        'user': '1000/hour',
+        'financial_operations': config('THROTTLE_RATE', default='10/min'),
+        'auth_operations': '5/min',
+    }
+}
+
+# Spectacular settings for API documentation
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'Lenme P2P Lending Platform API',
+    'DESCRIPTION': 'A peer-to-peer lending platform API built with Django REST Framework',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'COMPONENT_SPLIT_REQUEST': True,
+    'SORT_OPERATIONS': False,
+}
+
+# Custom user model
+AUTH_USER_MODEL = 'users.User'
+
+# Lending platform specific settings
+PLATFORM_FUNDING_FEE = config('PLATFORM_FEE', default=3.75, cast=float)
+DEFAULT_PAYMENT_TERMS = config('DEFAULT_PAYMENT_TERMS', default=6, cast=int)
+
+# Security settings
+if not DEBUG:
+    SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=True, cast=bool)
+    SECURE_BROWSER_XSS_FILTER = config('SECURE_BROWSER_XSS_FILTER', default=True, cast=bool)
+    SECURE_CONTENT_TYPE_NOSNIFF = config('SECURE_CONTENT_TYPE_NOSNIFF', default=True, cast=bool)
+    SECURE_HSTS_SECONDS = config('SECURE_HSTS_SECONDS', default=31536000, cast=int)
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = config('SECURE_HSTS_INCLUDE_SUBDOMAINS', default=True, cast=bool)
+    SECURE_HSTS_PRELOAD = config('SECURE_HSTS_PRELOAD', default=True, cast=bool)
+    SESSION_COOKIE_SECURE = config('SESSION_COOKIE_SECURE', default=True, cast=bool)
+    CSRF_COOKIE_SECURE = config('CSRF_COOKIE_SECURE', default=True, cast=bool)
+    X_FRAME_OPTIONS = 'DENY'
+
+# Session configuration
+SESSION_COOKIE_AGE = 86400  # 1 day
+SESSION_SAVE_EVERY_REQUEST = True
+SESSION_EXPIRE_AT_BROWSER_CLOSE = True
+
+# Email configuration
+EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
+EMAIL_HOST = config('EMAIL_HOST', default='')
+EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
+
+# Logging configuration with daily rotation
+import os
+from datetime import datetime
+
+# Logging configuration
+LOG_LEVEL = config('LOG_LEVEL', default='INFO')
+LOG_DIR = config('LOG_DIR', default='logs')
+
+# Create logs directory if it doesn't exist
+LOGS_PATH = BASE_DIR / LOG_DIR
+try:
+    LOGS_PATH.mkdir(exist_ok=True)
+    # Test write permissions
+    test_file = LOGS_PATH / '.test_write'
+    test_file.touch()
+    test_file.unlink()
+    LOGS_WRITABLE = True
+except (OSError, PermissionError):
+    LOGS_WRITABLE = False
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'detailed': {
+            'format': '[{asctime}] {levelname} {name} {message}',
+            'style': '{',
+            'datefmt': '%Y-%m-%d %H:%M:%S'
+        },
+        'simple': {
+            'format': '[{asctime}] {levelname} {message}',
+            'style': '{',
+            'datefmt': '%Y-%m-%d %H:%M:%S'
+        },
+    },
+    'handlers': {
+        'console': {
+            'level': LOG_LEVEL,
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+    },
+    'root': {
+        'level': LOG_LEVEL,
+        'handlers': ['console'],
+    },
+    'loggers': {
+        'django': {
+            'level': LOG_LEVEL,
+            'propagate': True,
+        },
+        'apps': {
+            'level': LOG_LEVEL,
+            'propagate': True,
+        },
+        'apps.loans': {
+            'level': LOG_LEVEL,
+            'propagate': True,
+        },
+        'apps.wallets': {
+            'level': LOG_LEVEL,
+            'propagate': True,
+        },
+        'apps.users': {
+            'level': LOG_LEVEL,
+            'propagate': True,
+        },
+    },
+}
+
+# Add file handler only if logs directory is writable
+if LOGS_WRITABLE:
+    LOGGING['handlers']['daily_file'] = {
+        'level': LOG_LEVEL,
+        'class': 'logging.handlers.TimedRotatingFileHandler',
+        'filename': str(LOGS_PATH / 'app.log'),
+        'when': 'midnight',
+        'interval': 1,
+        'backupCount': 7,  # Keep 7 days of logs
+        'formatter': 'detailed',
+        'encoding': 'utf-8',
+    }
+    LOGGING['root']['handlers'].append('daily_file')
+
+# Cache configuration (Redis)
+REDIS_URL = config('REDIS_URL', default='redis://localhost:6379/0')
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django_redis.cache.RedisCache',
+        'LOCATION': REDIS_URL,
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+        }
+    }
+} if not config('USE_SQLITE', default=False, cast=bool) else {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'unique-snowflake',
+    }
+}
+
+# Celery configuration
+CELERY_BROKER_URL = REDIS_URL
+CELERY_RESULT_BACKEND = REDIS_URL
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
+
+# Celery Beat Schedule - Periodic Tasks
+CELERY_BEAT_SCHEDULE = {
+    'check-overdue-payments': {
+        'task': 'apps.loans.tasks.check_overdue_payments',
+        'schedule': 3600.0,  # Run every hour (3600 seconds)
+        'options': {
+            'expires': 1800,  # Task expires after 30 minutes
+        }
+    },
+    'daily-loan-status-report': {
+        'task': 'apps.loans.tasks.loan_status_summary_report',
+        'schedule': 86400.0,  # Run daily (86400 seconds)
+        'options': {
+            'expires': 3600,  # Task expires after 1 hour
+        }
+    },
+    'weekly-cache-cleanup': {
+        'task': 'apps.loans.tasks.cleanup_expired_loan_cache',
+        'schedule': 604800.0,  # Run weekly (604800 seconds)
+        'options': {
+            'expires': 1800,  # Task expires after 30 minutes
+        }
+    },
+}
+
+# CORS settings
+CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='http://localhost:3000,http://127.0.0.1:3000', cast=Csv())
+CORS_ALLOW_CREDENTIALS = True
+
+# Proxy settings for reverse proxy deployments
+USE_X_FORWARDED_HOST = True
+USE_X_FORWARDED_PORT = True
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# Create logs directory if it doesn't exist
+(BASE_DIR / 'logs').mkdir(exist_ok=True)
+

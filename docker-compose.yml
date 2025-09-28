@@ -1,0 +1,112 @@
+version: '3.8'
+
+services:
+  p2p_lending_db:
+    image: postgres:15-alpine
+    volumes:
+      - p2p_lending_postgres_data:/var/lib/postgresql/data/
+    environment:
+      POSTGRES_DB: p2p_lending
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  p2p_lending_redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - p2p_lending_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  p2p_lending_web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./logs:/app/logs  # Mount logs to host for local debugging
+    env_file:
+      - .env
+    depends_on:
+      p2p_lending_db:
+        condition: service_healthy
+      p2p_lending_redis:
+        condition: service_healthy
+    command: >
+      sh -c "echo 'Waiting for database...' &&
+             python manage.py check --database default &&
+             echo 'Database is ready!' &&
+             echo 'Creating migrations...' &&
+             python manage.py makemigrations users &&
+             python manage.py makemigrations wallets &&
+             python manage.py makemigrations loans &&
+             python manage.py makemigrations common &&
+             python manage.py makemigrations &&
+             echo 'Applying migrations...' &&
+             python manage.py migrate &&
+             echo 'Applying django-celery-beat migrations...' &&
+             python manage.py migrate django_celery_beat &&
+             echo 'Seeding database...' &&
+             python manage.py seed_data --with-loan &&
+             echo 'Starting Django server...' &&
+             python manage.py runserver 0.0.0.0:8000"
+    restart: unless-stopped
+
+  p2p_lending_celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    depends_on:
+      p2p_lending_db:
+        condition: service_healthy
+      p2p_lending_redis:
+        condition: service_healthy
+      p2p_lending_web:
+        condition: service_started
+    command: >
+      sh -c "echo 'Waiting for Django to start...' &&
+             sleep 5 &&
+             celery -A p2p_lending_platform worker -l info --concurrency=2"
+    restart: unless-stopped
+
+  p2p_lending_celery_beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    depends_on:
+      p2p_lending_db:
+        condition: service_healthy
+      p2p_lending_redis:
+        condition: service_healthy
+      p2p_lending_web:
+        condition: service_started
+    command: >
+      sh -c "echo 'Waiting for Django migrations to complete...' &&
+             sleep 15 &&
+             echo 'Starting Celery Beat...' &&
+             celery -A p2p_lending_platform beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler"
+    restart: unless-stopped
+
+volumes:
+  p2p_lending_postgres_data:
+  p2p_lending_redis_data:
